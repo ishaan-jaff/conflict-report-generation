@@ -8,6 +8,6 @@ Server:
 - Gunicorn
 
 Sample Test of Existing Baseline Script:
-```
+```python
 python generate_report.py --upper_left 12.63 -77.96 --lower_right 1.24 -73.9 --dates 20230614 20230714
 ```
