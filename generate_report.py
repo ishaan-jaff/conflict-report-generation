@@ -12,10 +12,21 @@ from dotenv import load_dotenv
 import openai
 import pandas as pd
 from tqdm import tqdm
+from litellm import completion
+import litellm
 
 from generate_docx import DocxTemplateFiller
-
 load_dotenv()
+
+
+
+## Set your email
+os.environ["LITELLM_EMAIL"] = "ishaan1@berri.ai"
+litellm.openai_key = os.getenv("OPENAI_API_KEY")
+litellm.openrouter_key = os.getenv("OPENROUTER_API_KEY")
+
+## Set debugger to true
+litellm.debugger = True
 
 API_KEY = os.getenv("API_KEY")
 openai.api_key = str(API_KEY)
@@ -126,6 +137,7 @@ def standardize_date(input_date, format='%B %dth, %Y'):
         return f"Error: {str(e)}"
 
 def call_gpt_batch_prompts(messages_list, model='gpt-3.5-turbo-16k', max_tokens=4000):
+    import time
     prompts = [
         {
             "role": "user",
@@ -137,10 +149,45 @@ def call_gpt_batch_prompts(messages_list, model='gpt-3.5-turbo-16k', max_tokens=
         }
     ]
 
-    response = openai.ChatCompletion.create(model=model,
-                                            temperature=0.0,
-                                            messages=prompts, 
-                                            max_tokens=max_tokens)
+    response = None
+    rate_limited_models = set()
+    model_expiration_times = {}
+
+    # gpt-3.5-turbo-16k is the primary model
+    fallbacks = ["gpt-3.5-turbo-16k", "openrouter/anthropic/claude-2", "j2-mid", "gpt-3.5-turbo"]
+
+    # pick any of the supported completion models here: https://docs.litellm.ai/docs/completion/supported
+    start_time = time.time()
+    while response == None and time.time() - start_time < 120: # 120 seconds to try primary model + fallback
+        for model in fallbacks:
+        # loop thru all models
+            try:
+                if model in rate_limited_models: # check if model is currently cooling down
+                    if model_expiration_times.get(model) and time.time() >= model_expiration_times[model]:
+                        rate_limited_models.remove(model) # check if it's been 60s of cool down and remove model
+                    else:
+                        continue # skip model
+                
+                # Call LLM API 
+                response = completion(model=model,
+                        temperature=0.0,
+                        messages=prompts, 
+                        max_tokens=max_tokens,
+                        force_timeout=30,
+                    )
+                
+                # check if response == None
+                if response != None:
+                    return response
+
+            except Exception as e:
+                print(f"got exception {e}")
+                rate_limited_models.add(model)
+                model_expiration_times[model] = time.time() + 60 # cool down this selected model
+                print(f"rate_limited_models {rate_limited_models}")
+                pass
+
+
     if 'choices' in response and isinstance(response['choices'], list):
         try:
             return json.loads(response.choices[0].message.content)
@@ -216,14 +263,8 @@ def _batched_call_helper(prompts, max_tokens, batch_size):
         futures_to_prompts = {executor.submit(call_gpt_batch_prompts, prompts[i:i+batch_size], max_tokens=max_tokens): prompts[i:i+batch_size] for i in range(0, len(prompts), batch_size)}       
         
         for future in tqdm(as_completed(futures_to_prompts), total=len(futures_to_prompts), desc="Processing batches"):
-            try:
-                results.extend(future.result(timeout=20))
-            except TimeoutError:
-                prompts_batch = futures_to_prompts[future]
-                retry_future = executor.submit(call_gpt_batch_prompts, prompts_batch, max_tokens=max_tokens)
-                
-                results.extend(retry_future.result())
-
+            results.extend(future.result(timeout=60))
+    
     return results
 
 
