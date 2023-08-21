@@ -256,11 +256,9 @@ def generate_new_report(args, data):
         "AI Demo - Sep 6/source/data/seerist_pulse_v2_scribe_southcom2023-07-19.csv"
     ]
 
-    # Fetch dataframes in parallel (if possible based on how `fetch_data_from_s3` is implemented)
     dataframes = fetch_data_from_s3(paths)
     dataframes = dict(dataframes)
 
-    # Define transformations
     def preprocess_dataframe(df, coord_cols, date_col, content_col, args, url_col=None):
         df = filter_by_coordinates(df, *coord_cols, args.upper_left, args.lower_right)
         if url_col:
@@ -294,7 +292,6 @@ def generate_new_report(args, data):
     df = df.sort_values(by=['theme', 'day'], ascending=[True, False])
     df['day'] = df['day'].apply(lambda d: d.strftime('%B %dth, %Y'))
 
-    # Use groupby for efficiency instead of looping
     themes_content_dict = df.groupby('theme').apply(lambda group: group.apply(lambda row: f"{row['headline']} ({row['day']})", axis=1).tolist()).to_dict()
     data['theme'] = themes_content_dict
 
