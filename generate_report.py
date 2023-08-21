@@ -21,7 +21,6 @@ API_KEY = os.getenv("API_KEY")
 openai.api_key = str(API_KEY)
 
 MAPBOX_TOKEN = str(os.getenv("MAPBOX_TOKEN"))
-S3_BUCKET_NAME = str(os.getenv("S3_BUCKET_NAME"))
 ZYTE_API_KEY = str(os.getenv("ZYTE_API_KEY"))
 
 def get_location_details(upper_left_lat, upper_left_lon, lower_right_lat, lower_right_lon):
@@ -66,19 +65,21 @@ def latlong_to_string(lat, lon):
         abs(lon_deg), lon_min, lon_sec, lon_hem
     )
         
-def read_s3_file_to_dataframe(bucket: str, file_key: str) -> pd.DataFrame:
+def read_s3_file_to_dataframe(file_key: str) -> pd.DataFrame:
     """Read a CSV file from S3 into a DataFrame."""
     df_name = file_key.split('/')[-1].split('_')[0].lower()
     
-    s3_client = boto3.client('s3')
-    response = s3_client.get_object(Bucket=bucket, Key=file_key)
-    content = response['Body']
+    # s3_client = boto3.client('s3')
+    # response = s3_client.get_object(Bucket=bucket, Key=file_key)
+    # content = response['Body']
     
-    return (df_name, pd.read_csv(BytesIO(content.read())))
+    # return (df_name, pd.read_csv(BytesIO(content.read())))
+    
+    return (df_name, pd.read_csv(file_key))
 
 def fetch_data_from_s3(paths):
     with ThreadPoolExecutor(max_workers=len(paths)) as executor:
-        futures = [executor.submit(read_s3_file_to_dataframe, S3_BUCKET_NAME, path) for path in paths]
+        futures = [executor.submit(read_s3_file_to_dataframe, path) for path in paths]
         return [future.result() for future in as_completed(futures)]
 
 def filter_by_coordinates(df: pd.DataFrame, lat_col: str, long_col: str, upper_left: tuple, lower_right: tuple) -> pd.DataFrame:
@@ -225,22 +226,27 @@ def _batched_call_helper(prompts, max_tokens, batch_size):
 
     return results
 
+
+def generate_summary(contents):
+    prompt = f"Events Data: {contents}\n\nAbove include events data. Provide an executive summary of the most significant events, geopolitical trends, and patterns present in the given events data. Ensure the summary is presented in paragraph format adhering to AP style guidelines. Avoid transitional words like 'overall'."
+    response = call_gpt_batch_prompts([prompt], model='gpt-4', max_tokens=1024)
+    return response.strip('][')
+
 def generate_conclusions(contents):
     
-    conclusions = []
-    
     prompts = [
-        f"Events Data: {contents}\n\nBased on the events data, provide an executive summary of the most significant events, geopolitical trends, and patterns present in the given events data. Ensure the summary is presented in paragraph format adhering to AP style guidelines. Avoid transitional words like 'overall'."
         f"Events Data: {contents}\n\nBased on the events data, write a paragraph summary of five or less sentences on what the overall sentiment is in relation to geopolitical stability. Adhere to AP style guidelines.",
         f"Events Data: {contents}\n\nBased on the events data, write a paragraph summary of six or less sentences on implications on global or regional affairs. Avoid transitional words like 'overall'. Adhere to AP style guidelines.",
     ]
 
-    responses = call_gpt_batch_prompts(prompts, model='gpt-3.5-turbo-16k', max_tokens=512)
-    conclusions = [conclusions.append(response) for response in responses]
+    conclusions = []
+    for prompt in prompts:
+        response = call_gpt_batch_prompts([prompt], model='gpt-4', max_tokens=512)
+        conclusions.append(response)
     
-    prompt = [f"Provide a bulleted list of recommended action points based on the sentiment and implications. \nSentiment: {conclusions[1]} \nImplications: {conclusions[2]}"]
+    prompt = [f"Provide a bulleted list of recommended action points based on the sentiment and implications. \nSentiment: {conclusions[0]} \nImplications: {conclusions[1]}"]
     while True:
-        response = call_gpt_batch_prompts(prompt, model='gpt-3.5-turbo-16k', max_tokens=512)
+        response = call_gpt_batch_prompts(prompt, model='gpt-4', max_tokens=512)
         if response[0]=='-':
             break;
     
@@ -251,14 +257,16 @@ def generate_conclusions(contents):
 def generate_new_report(args, data):
     
     paths = [
-        "AI Demo - Sep 6/source/data/ACLED_2023-05-01-2023-07-21-Central-South_America.csv",
-        "AI Demo - Sep 6/source/data/gdelt_15m_update_20230411100229.csv",
-        "AI Demo - Sep 6/source/data/seerist_pulse_v2_scribe_southcom2023-07-19.csv"
+        "./source/data/ACLED_2023-05-01-2023-07-21-Central-South_America.csv",
+        "./source/data/gdelt_15m_update_20230411100229.csv",
+        "./source/data//seerist_pulse_v2_scribe_southcom2023-07-19.csv"
     ]
 
+    # Fetch dataframes in parallel (if possible based on how `fetch_data_from_s3` is implemented)
     dataframes = fetch_data_from_s3(paths)
     dataframes = dict(dataframes)
 
+    # Define transformations
     def preprocess_dataframe(df, coord_cols, date_col, content_col, args, url_col=None):
         df = filter_by_coordinates(df, *coord_cols, args.upper_left, args.lower_right)
         if url_col:
@@ -292,12 +300,16 @@ def generate_new_report(args, data):
     df = df.sort_values(by=['theme', 'day'], ascending=[True, False])
     df['day'] = df['day'].apply(lambda d: d.strftime('%B %dth, %Y'))
 
+    data['EXECUTIVE SUMMARY'] = generate_summary(headlines)
+    
+    print('Generated summary....')
+
+    # Use groupby for efficiency instead of looping
     themes_content_dict = df.groupby('theme').apply(lambda group: group.apply(lambda row: f"{row['headline']} ({row['day']})", axis=1).tolist()).to_dict()
     data['theme'] = themes_content_dict
 
-    summary, sentiment, implications, actions = generate_conclusions(headlines)
+    sentiment, implications, actions = generate_conclusions(headlines)
 
-    data['EXECUTIVE SUMMARY'] = summary
     data['OVERALL SENTIMENT'] = sentiment
     data['IMPLICATIONS'] = implications
     data['RECOMMENDED ACTIONS'] = actions
@@ -338,10 +350,6 @@ def main(args):
     filler = DocxTemplateFiller(template_path, json_path, output_path)
     filler.fill_placeholders()
     filler.save_output()
-    
-    s3 = boto3.client('s3')
-    s3.upload_file(output_path, S3_BUCKET_NAME, 'AI Demo - Sep 6/'+output_path)
-    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Filter datasets based on latitude and longitude coordinates.")
