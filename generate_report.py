@@ -262,7 +262,6 @@ def generate_new_report(args, data):
         "./source/data//seerist_pulse_v2_scribe_southcom2023-07-19.csv"
     ]
 
-    # Fetch dataframes in parallel (if possible based on how `fetch_data_from_s3` is implemented)
     dataframes = fetch_data_from_s3(paths)
     dataframes = dict(dataframes)
 
