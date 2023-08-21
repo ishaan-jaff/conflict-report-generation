@@ -175,10 +175,18 @@ def call_gpt_batch_prompts(messages_list, model='gpt-3.5-turbo-16k', max_tokens=
                         max_tokens=max_tokens,
                         force_timeout=30,
                     )
-                
+
                 # check if response == None
                 if response != None:
-                    return response
+                    if 'choices' in response and isinstance(response['choices'], list):
+                        try:
+                            return json.loads(response.choices[0].message.content)
+                        except json.JSONDecodeError:
+                            
+                            return response.choices[0].message.content
+                    else:
+                        print("Unexpected response format:", response)
+                        return []
 
             except Exception as e:
                 print(f"got exception {e}")
